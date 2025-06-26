@@ -324,11 +324,24 @@ class FileDropper(Widget):
     uploaded files are stored as dictionary of bytes object indexed
     by the filename.
 
+    The FileDropper includes enhanced support for chemical file formats
+    like .xyz, .pdb, .mol, etc., which are automatically decoded as text.
+
+    Note: For Google Colab compatibility, if you encounter communication 
+    errors, you can enable debug mode using `file_dropper.enable_colab_debug(True)`.
+
     Reference: https://panel.holoviz.org/reference/widgets/FileDropper.html
 
     :Example:
 
     >>> FileDropper(accepted_filetypes=['image/*'], multiple=True)
+    
+    >>> # For chemical files with local saving
+    >>> FileDropper(
+    ...     accepted_filetypes=['.xyz', '.pdb', '.mol'],
+    ...     save_to_local=True,
+    ...     local_save_directory='./chemical_files'
+    ... )
     """
 
     accepted_filetypes = param.List(default=[], doc="""
@@ -429,6 +442,7 @@ class FileDropper(Widget):
     def __init__(self, **params):
         super().__init__(**params)
         self._file_buffer = {}
+        self._debug_colab = False
 
     def _get_model(
         self, doc: Document, root: Model | None = None,
@@ -560,7 +574,16 @@ class FileDropper(Widget):
         Process upload and delete events with improved handling for text files.
         """
         try:
+            # Handle the case where event.data might be None or malformed
+            if not hasattr(event, 'data') or event.data is None:
+                self.param.warning("Received event with no data, skipping")
+                return
+                
             data = event.data
+            if not isinstance(data, dict) or 'name' not in data:
+                self.param.warning("Received malformed event data, skipping")
+                return
+                
             name = data['name']
             
             if event.event_name == 'delete_event':
@@ -589,16 +612,32 @@ class FileDropper(Widget):
             # Process chunk data with better error handling
             chunk_data = data['data']
             
-            # Convert memoryview or other array-like objects to bytes if needed
+            # Debug logging for Colab compatibility
+            if hasattr(self, '_debug_colab') and self._debug_colab:
+                print(f"Processing chunk {data['chunk']}/{data['total_chunks']} for {name}, data type: {type(chunk_data)}")
+            
+            # Convert various array-like objects to bytes
             if hasattr(chunk_data, 'tobytes'):
                 chunk_data = chunk_data.tobytes()
+            elif hasattr(chunk_data, '__array__'):
+                # Handle numpy arrays and similar objects
+                import numpy as np
+                chunk_data = np.asarray(chunk_data).tobytes()
+            elif isinstance(chunk_data, (list, tuple)):
+                # Handle lists/tuples of integers (from Uint8Array serialization)
+                try:
+                    chunk_data = bytes(chunk_data)
+                except (TypeError, ValueError) as e:
+                    # If conversion fails, skip this chunk and log warning
+                    self.param.warning(f"Failed to process chunk {data['chunk']} for file {name}: {str(e)}")
+                    return
             elif not isinstance(chunk_data, (bytes, bytearray)):
                 # Try to convert to bytes if it's not already
                 try:
                     chunk_data = bytes(chunk_data)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as e:
                     # If conversion fails, skip this chunk and log warning
-                    self.param.warning(f"Failed to process chunk {data['chunk']} for file {name}")
+                    self.param.warning(f"Failed to process chunk {data['chunk']} for file {name}: {str(e)}")
                     return
                     
             self._file_buffer[name].append(chunk_data)
@@ -650,9 +689,10 @@ class FileDropper(Widget):
             
         except Exception as e:
             # Log the error but don't crash the widget
-            self.param.warning(f"Error processing file upload for {data.get('name', 'unknown')}: {str(e)}")
+            file_name = data.get('name', 'unknown') if isinstance(data, dict) else 'unknown'
+            self.param.warning(f"Error processing file upload for {file_name}: {str(e)}")
             # Clean up partial data
-            if 'name' in data and data['name'] in self._file_buffer:
+            if isinstance(data, dict) and 'name' in data and data['name'] in self._file_buffer:
                 del self._file_buffer[data['name']]
 
     @classmethod
@@ -732,6 +772,19 @@ class FileDropper(Widget):
         except Exception as e:
             self.param.warning(f"Failed to save file {filename}: {str(e)}")
             return None
+
+    def enable_colab_debug(self, enable: bool = True):
+        """
+        Enable debug logging for Google Colab compatibility issues.
+        
+        Parameters
+        ----------
+        enable : bool
+            Whether to enable debug logging
+        """
+        self._debug_colab = enable
+        if enable:
+            print("Colab debug mode enabled for FileDropper")
 
     def clear(self):
         """

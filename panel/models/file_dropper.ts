@@ -138,9 +138,16 @@ export class FileDropperView extends InputWidgetView {
         }
         const start = i*buffer_size
         const end = Math.min(start+buffer_size, file.size)
+        // Convert ArrayBuffer to a serializable format for Colab compatibility
+        const arrayBuffer = await file.slice(start, end).arrayBuffer()
+        const uint8Array = new Uint8Array(arrayBuffer)
+        
+        // Convert to regular array for better serialization across environments
+        const dataArray = Array.from(uint8Array)
+        
         this.model.trigger_event(new UploadEvent({
           chunk: i+1,
-          data: await file.slice(start, end).arrayBuffer(),
+          data: dataArray,
           name: (file as any)._relativePath || file.name,
           total_chunks: chunks,
           type: file.type,
