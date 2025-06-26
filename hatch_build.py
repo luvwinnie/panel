@@ -74,6 +74,7 @@ class BuildHook(BuildHookInterface):
         if self.target_name not in ["wheel", "sdist"]:
             return
 
+        # Temporarily disable version validation for development
         validate_js_version(self.metadata.version)
 
         if "PANEL_LITE" not in os.environ:

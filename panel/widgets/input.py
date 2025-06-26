@@ -380,7 +380,51 @@ class FileDropper(Widget):
       Width of this component. If sizing_mode is set to stretch
       or scale mode this will merely be used as a suggestion.""")
 
-    _rename = {'value': None}
+    # New parameters for local file saving
+    save_to_local = param.Boolean(default=False, doc="""
+        Whether to automatically save uploaded files to local storage.""")
+
+    local_save_directory = param.String(default="./uploads", doc="""
+        Directory path where uploaded files will be saved locally.
+        Defaults to './uploads' relative to current working directory.""")
+
+    override_existing = param.Boolean(default=False, doc="""
+        Whether to override existing files when saving locally.
+        If False, will append a number to the filename to avoid conflicts.""")
+
+    saved_files = param.Dict(default={}, doc="""
+        Dictionary containing the local file paths of saved files,
+        indexed by the original filename.""")
+
+    _rename = {
+        'value': None,
+        'save_to_local': None,
+        'local_save_directory': None,
+        'override_existing': None,
+        'saved_files': None
+    }
+
+    # Chemical file extensions that should be treated as text
+    _chemical_text_extensions = {
+        '.xyz', '.pdb', '.ent', '.mol', '.mdl', '.sdf', '.sd', '.mol2', '.ml2', '.sy2',
+        '.cml', '.smi', '.smiles', '.cif', '.mcif', '.hin', '.mmd', '.mmod', '.gal',
+        '.g92', '.g94', '.g98', '.g03', '.fchk', '.fch', '.fck', '.inp', '.gamin',
+        '.gam', '.gamout', '.mopout', '.moo', '.res', '.ins', '.fa', '.fsa', '.fasta',
+        '.gen', '.embl', '.pc', '.crk2d', '.crk3d', '.dmol', '.outmol', '.car', '.arc',
+        '.alc', '.cdxml'
+    }
+
+    # Chemical MIME types
+    _chemical_mime_types = {
+        'chemical/x-xyz', 'chemical/x-pdb', 'chemical/x-mol2', 'chemical/x-mdl-molfile',
+        'chemical/x-mdl-sdfile', 'chemical/x-cml', 'chemical/x-cif', 'chemical/x-mmcif',
+        'chemical/x-daylight-smiles', 'chemical/x-hin', 'chemical/x-macromodel-input',
+        'chemical/x-gaussian-log', 'chemical/x-gaussian-checkpoint', 'chemical/x-gamess-input',
+        'chemical/x-gamess-output', 'chemical/x-mopac-out', 'chemical/x-shelx',
+        'chemical/x-fasta', 'chemical/x-genbank', 'chemical/x-ncbi-asn1-xml',
+        'chemical/x-crk2d', 'chemical/x-crk3d', 'chemical/x-dmol', 'chemical/x-msi-car',
+        'chemical/x-alchemy', 'chemical/x-cdx', 'chemical/x-cdxml'
+    }
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -398,33 +442,316 @@ class FileDropper(Widget):
         self._register_events('delete_event', 'upload_event', model=model, doc=doc, comm=comm)
         return model
 
+    def _is_text_file(self, filename: str, mime_type: str) -> bool:
+        """
+        Determine if a file should be treated as text based on filename and MIME type.
+        
+        Parameters
+        ----------
+        filename : str
+            The filename including extension
+        mime_type : str
+            The MIME type of the file
+            
+        Returns
+        -------
+        bool
+            True if the file should be treated as text
+        """
+        # Check if it's explicitly a text MIME type
+        if mime_type.startswith('text/'):
+            return True
+            
+        # Check if it's a chemical MIME type (these are typically text-based)
+        if mime_type in self._chemical_mime_types:
+            return True
+            
+        # Check file extension for chemical/text formats
+        if '.' in filename:
+            ext = '.' + filename.lower().split('.')[-1]
+            if ext in self._chemical_text_extensions:
+                return True
+                
+        return False
+
+    def _get_unique_filename(self, filename: str, directory: str) -> str:
+        """
+        Generate a unique filename to avoid conflicts.
+        
+        Parameters
+        ----------
+        filename : str
+            Original filename
+        directory : str
+            Target directory
+            
+        Returns
+        -------
+        str
+            Unique filename
+        """
+        import os
+        
+        if not os.path.exists(os.path.join(directory, filename)):
+            return filename
+        
+        if self.override_existing:
+            return filename
+        
+        # Generate unique filename by appending number
+        name, ext = os.path.splitext(filename)
+        counter = 1
+        
+        while True:
+            new_filename = f"{name}_{counter}{ext}"
+            if not os.path.exists(os.path.join(directory, new_filename)):
+                return new_filename
+            counter += 1
+
+    def _save_file_to_local(self, filename: str, content: bytes | str) -> str | None:
+        """
+        Save uploaded file to local storage.
+        
+        Parameters
+        ----------
+        filename : str
+            Original filename
+        content : bytes or str
+            File content
+            
+        Returns
+        -------
+        str or None
+            Local file path if successful, None if failed
+        """
+        if not self.save_to_local:
+            return None
+            
+        try:
+            import os
+            
+            # Create directory if it doesn't exist
+            os.makedirs(self.local_save_directory, exist_ok=True)
+            
+            # Get unique filename
+            unique_filename = self._get_unique_filename(filename, self.local_save_directory)
+            file_path = os.path.join(self.local_save_directory, unique_filename)
+            
+            # Write file content
+            if isinstance(content, str):
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            else:
+                with open(file_path, 'wb') as f:
+                    f.write(content)
+            
+            # Update saved_files dictionary
+            self.saved_files[filename] = file_path
+            self.param.trigger('saved_files')
+            
+            return file_path
+            
+        except Exception as e:
+            self.param.warning(f"Failed to save file {filename} to local storage: {str(e)}")
+            return None
+
     def _process_event(self, event: DeleteEvent | UploadEvent):
-        data = event.data
-        name = data['name']
-        if event.event_name == 'delete_event':
-            if name in self.mime_type:
-                del self.mime_type[name]
-            if name in self.value:
-                del self.value[name]
+        """
+        Process upload and delete events with improved handling for text files.
+        """
+        try:
+            data = event.data
+            name = data['name']
+            
+            if event.event_name == 'delete_event':
+                if name in self.mime_type:
+                    del self.mime_type[name]
+                if name in self.value:
+                    del self.value[name]
+                if name in self.saved_files:
+                    # Optionally delete the local file
+                    if self.save_to_local:
+                        try:
+                            import os
+                            local_path = self.saved_files[name]
+                            if os.path.exists(local_path):
+                                os.remove(local_path)
+                        except Exception as e:
+                            self.param.warning(f"Failed to delete local file {local_path}: {str(e)}")
+                    del self.saved_files[name]
+                self.param.trigger('mime_type', 'value', 'saved_files')
+                return
+
+            # Handle upload event
+            if data['chunk'] == 1:
+                self._file_buffer[name] = []
+                
+            # Process chunk data with better error handling
+            chunk_data = data['data']
+            
+            # Convert memoryview or other array-like objects to bytes if needed
+            if hasattr(chunk_data, 'tobytes'):
+                chunk_data = chunk_data.tobytes()
+            elif not isinstance(chunk_data, (bytes, bytearray)):
+                # Try to convert to bytes if it's not already
+                try:
+                    chunk_data = bytes(chunk_data)
+                except (TypeError, ValueError):
+                    # If conversion fails, skip this chunk and log warning
+                    self.param.warning(f"Failed to process chunk {data['chunk']} for file {name}")
+                    return
+                    
+            self._file_buffer[name].append(chunk_data)
+            
+            # Check if we have received all chunks
+            if data['chunk'] != data['total_chunks']:
+                return
+
+            # All chunks received, reconstruct the file
+            buffers = self._file_buffer.pop(name)
+            file_buffer: bytes | str = b''.join(buffers)
+            
+            # Handle text decoding with improved logic
+            mime_type = data.get('type', '')
+            
+            # Determine if this should be treated as text
+            if self._is_text_file(name, mime_type):
+                try:
+                    # Try UTF-8 first
+                    file_buffer = file_buffer.decode('utf-8')
+                except UnicodeDecodeError:
+                    try:
+                        # Try latin-1 as fallback for chemical files
+                        file_buffer = file_buffer.decode('latin-1')
+                    except UnicodeDecodeError:
+                        # If both fail, keep as bytes but log warning
+                        self.param.warning(f"Could not decode {name} as text, keeping as bytes")
+            elif mime_type.startswith('text/'):
+                # Standard text files
+                try:
+                    file_buffer = file_buffer.decode('utf-8')
+                except UnicodeDecodeError:
+                    pass  # Keep as bytes if decoding fails
+                    
+            self.value[name] = file_buffer
+            self.mime_type[name] = mime_type
+            
+            # Save file to local storage if enabled
+            if self.save_to_local:
+                # For local saving, we need the raw bytes
+                content_to_save = file_buffer
+                if isinstance(file_buffer, str):
+                    content_to_save = file_buffer.encode('utf-8')
+                local_path = self._save_file_to_local(name, content_to_save)
+                if local_path:
+                    self.param.message(f"File {name} saved to: {local_path}")
+            
             self.param.trigger('mime_type', 'value')
-            return
+            
+        except Exception as e:
+            # Log the error but don't crash the widget
+            self.param.warning(f"Error processing file upload for {data.get('name', 'unknown')}: {str(e)}")
+            # Clean up partial data
+            if 'name' in data and data['name'] in self._file_buffer:
+                del self._file_buffer[data['name']]
 
-        if data['chunk'] == 1:
-            self._file_buffer[name] = []
-        self._file_buffer[name].append(data['data'])
-        if data['chunk'] != data['total_chunks']:
-            return
+    @classmethod
+    def supports_chemical_formats(cls) -> list[str]:
+        """
+        Return a list of supported chemical file formats.
+        
+        Returns
+        -------
+        list[str]
+            List of supported chemical file extensions and MIME types
+        """
+        return list(cls._chemical_text_extensions) + list(cls._chemical_mime_types)
 
-        buffers = self._file_buffer.pop(name)
-        file_buffer: bytes | str = b''.join(buffers)
-        if data['type'].startswith('text/') and isinstance(file_buffer, bytes):
-            try:
-                file_buffer = file_buffer.decode('utf-8')
-            except UnicodeDecodeError:
-                pass
-        self.value[name] = file_buffer
-        self.mime_type[name] = data['type']
-        self.param.trigger('mime_type', 'value')
+    def get_local_file_path(self, filename: str) -> str | None:
+        """
+        Get the local file path for a saved file.
+        
+        Parameters
+        ----------
+        filename : str
+            Original filename
+            
+        Returns
+        -------
+        str or None
+            Local file path if file was saved, None otherwise
+        """
+        return self.saved_files.get(filename)
+
+    def save_file(self, filename: str, target_path: str | None = None) -> str | None:
+        """
+        Manually save an uploaded file to a specific location.
+        
+        Parameters
+        ----------
+        filename : str
+            Name of the uploaded file to save
+        target_path : str, optional
+            Target file path. If not provided, uses default save directory
+            
+        Returns
+        -------
+        str or None
+            Saved file path if successful, None if failed
+        """
+        if filename not in self.value:
+            self.param.warning(f"File {filename} not found in uploaded files")
+            return None
+            
+        try:
+            import os
+            
+            content = self.value[filename]
+            
+            if target_path is None:
+                # Use default save directory
+                os.makedirs(self.local_save_directory, exist_ok=True)
+                unique_filename = self._get_unique_filename(filename, self.local_save_directory)
+                target_path = os.path.join(self.local_save_directory, unique_filename)
+            else:
+                # Create directory for target path if needed
+                target_dir = os.path.dirname(target_path)
+                if target_dir:
+                    os.makedirs(target_dir, exist_ok=True)
+            
+            # Write file
+            if isinstance(content, str):
+                with open(target_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            else:
+                with open(target_path, 'wb') as f:
+                    f.write(content)
+            
+            return target_path
+            
+        except Exception as e:
+            self.param.warning(f"Failed to save file {filename}: {str(e)}")
+            return None
+
+    def clear(self):
+        """
+        Clear all uploaded files and reset the widget.
+        """
+        # Optionally delete local files
+        if self.save_to_local:
+            for filename, local_path in self.saved_files.items():
+                try:
+                    import os
+                    if os.path.exists(local_path):
+                        os.remove(local_path)
+                except Exception as e:
+                    self.param.warning(f"Failed to delete local file {local_path}: {str(e)}")
+        
+        self.value = {}
+        self.mime_type = {}
+        self.saved_files = {}
+        self._file_buffer = {}
+        self.param.trigger('mime_type', 'value', 'saved_files')
 
 
 class StaticText(Widget):
@@ -896,7 +1223,7 @@ class TimePicker(_TimeCommon):
 class ColorPicker(Widget):
     """
     The `ColorPicker` widget allows selecting a hexadecimal RGB color value
-    using the browser’s color-picking widget.
+    using the browser's color-picking widget.
 
     Reference: https://panel.holoviz.org/reference/widgets/ColorPicker.html
 
