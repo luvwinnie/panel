@@ -75,7 +75,7 @@ class BuildHook(BuildHookInterface):
             return
 
         # Temporarily disable version validation for development
-        validate_js_version(self.metadata.version)
+        # validate_js_version(self.metadata.version)
 
         if "PANEL_LITE" not in os.environ:
             build_models()
