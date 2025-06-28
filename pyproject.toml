@@ -107,7 +107,7 @@ panel = "panel.command:main"
 
 [tool.hatch.version]
 source = "vcs"
-raw-options = { version_scheme = "no-guess-dev" }
+raw-options = { version_scheme = "no-guess-dev", tag_regex = "^(?P<version>\\d+\\.\\d+\\.\\d+(?:-rc\\.\\d+)?(?:-\\w+)?)$" }
 
 [tool.hatch.build.targets.wheel]
 include = ["panel"]
