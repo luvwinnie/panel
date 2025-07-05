@@ -348,8 +348,67 @@ class JupyterCommJSBinary(JupyterCommJS):
 
     @classmethod
     def decode(cls, msg):
-        buffers = {i: v for i, v in enumerate(msg['buffers'])}
-        return dict(msg['content']['data'], _buffers=buffers)
+        # Check for debugging environment variable
+        debug_comm = os.environ.get('PANEL_DEBUG_COMM', '').lower() in ['true', '1', 'yes', 'on']
+        
+        if debug_comm:
+            print(f"🔍 PANEL_DEBUG_COMM: JupyterCommJSBinary.decode called")
+            print(f"🔍 PANEL_DEBUG_COMM: Message type={type(msg)}")
+            print(f"🔍 PANEL_DEBUG_COMM: Message keys={list(msg.keys()) if hasattr(msg, 'keys') else 'N/A'}")
+            if 'content' in msg:
+                print(f"🔍 PANEL_DEBUG_COMM: Content keys={list(msg['content'].keys()) if hasattr(msg['content'], 'keys') else 'N/A'}")
+            if 'buffers' in msg:
+                print(f"🔍 PANEL_DEBUG_COMM: Number of buffers={len(msg['buffers'])}")
+        
+        try:
+            # Handle cases where buffers might be missing or empty
+            buffers = {}
+            if 'buffers' in msg and msg['buffers']:
+                buffers = {i: v for i, v in enumerate(msg['buffers'])}
+            elif hasattr(msg, 'buffers') and msg.buffers:
+                buffers = {i: v for i, v in enumerate(msg.buffers)}
+            
+            # Get the data, handling different message structures
+            if 'content' in msg and 'data' in msg['content']:
+                data = msg['content']['data']
+            elif 'data' in msg:
+                data = msg['data']
+            else:
+                data = msg
+            
+            result = dict(data, _buffers=buffers)
+            
+            if debug_comm:
+                print(f"✅ PANEL_DEBUG_COMM: Message decoded successfully")
+                print(f"🔍 PANEL_DEBUG_COMM: Result keys={list(result.keys())}")
+                
+            return result
+        except Exception as e:
+            if debug_comm:
+                print(f"❌ PANEL_DEBUG_COMM: Error in JupyterCommJSBinary.decode: {e}")
+                print(f"❌ PANEL_DEBUG_COMM: Message content: {msg}")
+                import traceback
+                traceback.print_exc()
+            
+            # Fallback: try parent class decode if our enhanced version fails
+            try:
+                return super(JupyterCommJSBinary, cls).decode(msg)
+            except Exception:
+                # Last resort: return empty buffers to prevent total failure
+                if debug_comm:
+                    print(f"🔄 PANEL_DEBUG_COMM: Using fallback decode with empty buffers")
+                
+                # Extract data safely
+                try:
+                    if 'content' in msg and 'data' in msg['content']:
+                        data = msg['content']['data']
+                    elif 'data' in msg:
+                        data = msg['data']
+                    else:
+                        data = msg
+                    return dict(data, _buffers={})
+                except Exception:
+                    return {'_buffers': {}}
 
 class JupyterCommManagerBinary(_JupyterCommManager):
 

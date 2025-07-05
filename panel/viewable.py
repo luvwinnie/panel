@@ -485,24 +485,142 @@ class MimeRenderMixin:
         """
         Handles Protocol messages arriving from the client comm.
         """
+        import os
+        # Check for debugging environment variable
+        debug_comm = os.environ.get('PANEL_DEBUG_COMM', '').lower() in ['true', '1', 'yes', 'on']
+        
+        if debug_comm:
+            print(f"🔍 PANEL_DEBUG_COMM: _on_msg called with ref={ref}")
+            print(f"🔍 PANEL_DEBUG_COMM: manager type={type(manager)}")
+            print(f"🔍 PANEL_DEBUG_COMM: msg type={type(msg)}, keys={list(msg.keys()) if hasattr(msg, 'keys') else 'N/A'}")
+        
         root, doc, comm = state._views[ref][1:]
+        
+        if debug_comm:
+            print(f"🔍 PANEL_DEBUG_COMM: root type={type(root)}")
+            print(f"🔍 PANEL_DEBUG_COMM: doc type={type(doc)}")
+            print(f"🔍 PANEL_DEBUG_COMM: comm type={type(comm)}, id={comm.id if comm else None}")
+        
         patch_cds_msg(root, msg)
         held = doc.callbacks.hold_value
-        patch = manager.assemble(msg)
+        
+        if debug_comm:
+            print(f"🔍 PANEL_DEBUG_COMM: held callbacks={held}")
+            print(f"🔍 PANEL_DEBUG_COMM: About to assemble patch from message...")
+        
+        try:
+            patch = manager.assemble(msg)
+            if debug_comm:
+                print(f"🔍 PANEL_DEBUG_COMM: Patch assembled successfully, type={type(patch)}")
+                print(f"🔍 PANEL_DEBUG_COMM: Patch events count={len(patch.events) if hasattr(patch, 'events') else 'N/A'}")
+        except Exception as e:
+            if debug_comm:
+                print(f"❌ PANEL_DEBUG_COMM: Error assembling patch: {e}")
+                print(f"❌ PANEL_DEBUG_COMM: Patch assembly traceback:")
+                traceback.print_exc()
+            raise
+        
         doc.hold()
         try:
+            if debug_comm:
+                print(f"🔍 PANEL_DEBUG_COMM: Applying patch to document...")
+                if hasattr(patch, 'events'):
+                    for i, event in enumerate(patch.events):
+                        print(f"🔍 PANEL_DEBUG_COMM: Event {i}: type={type(event)}")
+                        if hasattr(event, 'attr'):
+                            print(f"🔍 PANEL_DEBUG_COMM: Event {i}: attr={event.attr}")
+                        if hasattr(event, 'new'):
+                            print(f"🔍 PANEL_DEBUG_COMM: Event {i}: new value type={type(event.new)}")
+            
             patch.apply_to_document(doc, comm.id if comm else None)
-        except DeserializationError:
-            import os
-            bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
-            if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
-                self.param.warning(
-                    "Comm received message that could not be deserialized."
-                )
+            
+            if debug_comm:
+                print(f"✅ PANEL_DEBUG_COMM: Patch applied successfully")
+                
+        except DeserializationError as de:
+            if debug_comm:
+                print(f"❌ PANEL_DEBUG_COMM: DeserializationError occurred!")
+                print(f"❌ PANEL_DEBUG_COMM: Error details: {de}")
+                print(f"❌ PANEL_DEBUG_COMM: Error type: {type(de)}")
+                print(f"❌ PANEL_DEBUG_COMM: Full traceback:")
+                traceback.print_exc()
+                print(f"❌ PANEL_DEBUG_COMM: Original message content:")
+                try:
+                    import json
+                    print(json.dumps(msg, indent=2, default=str))
+                except Exception as json_err:
+                    print(f"❌ PANEL_DEBUG_COMM: Could not serialize message: {json_err}")
+                    print(f"❌ PANEL_DEBUG_COMM: Message repr: {repr(msg)}")
+                print(f"❌ PANEL_DEBUG_COMM: Manager state: {vars(manager) if hasattr(manager, '__dict__') else 'N/A'}")
+            
+            # Handle buffer-related deserialization errors more gracefully
+            error_msg = str(de).lower()
+            if "can't resolve buffer" in error_msg or "buffer" in error_msg:
+                if debug_comm:
+                    print(f"🔄 PANEL_DEBUG_COMM: Attempting to handle buffer resolution error")
+                
+                # Try to create a simplified patch without the problematic buffers
+                try:
+                    # Create a minimal patch to keep the UI responsive
+                    from bokeh.protocol.messages.patch_doc import PatchDoc
+                    from bokeh.protocol.receiver import Receiver
+                    
+                    # Extract non-buffer events if possible
+                    simplified_events = []
+                    if hasattr(patch, 'events'):
+                        for event in patch.events:
+                            # Skip events that reference buffers
+                            if hasattr(event, 'new') and isinstance(event.new, dict):
+                                if 'data' in event.new and 'id' in str(event.new.get('data', {})):
+                                    continue  # Skip buffer-dependent events
+                            simplified_events.append(event)
+                    
+                    if simplified_events:
+                        # Create a new patch with only the safe events
+                        import copy
+                        safe_patch = copy.deepcopy(patch)
+                        safe_patch.events = simplified_events
+                        safe_patch.apply_to_document(doc, comm.id if comm else None)
+                        if debug_comm:
+                            print(f"✅ PANEL_DEBUG_COMM: Applied simplified patch without buffers")
+                    else:
+                        if debug_comm:
+                            print(f"⚠️ PANEL_DEBUG_COMM: No safe events to apply, skipping patch")
+                        
+                except Exception as fallback_error:
+                    if debug_comm:
+                        print(f"❌ PANEL_DEBUG_COMM: Fallback patch failed: {fallback_error}")
+                    
+                    # Issue warning but don't crash
+                    import os
+                    bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
+                    if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
+                        warning_msg = "Comm received message with buffer data that could not be deserialized. Animation data may be incomplete."
+                        if debug_comm:
+                            warning_msg += f" Error: {de}"
+                        self.param.warning(warning_msg)
+            else:
+                # Original warning logic for non-buffer errors
+                import os
+                bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
+                if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
+                    warning_msg = "Comm received message that could not be deserialized."
+                    if debug_comm:
+                        warning_msg += f" Error: {de}"
+                    self.param.warning(warning_msg)
+        except Exception as e:
+            if debug_comm:
+                print(f"❌ PANEL_DEBUG_COMM: Unexpected error during patch application: {e}")
+                print(f"❌ PANEL_DEBUG_COMM: Error type: {type(e)}")
+                traceback.print_exc()
+            raise
         finally:
             doc.unhold()
             if held:
                 doc.hold(held)
+            
+            if debug_comm:
+                print(f"🔍 PANEL_DEBUG_COMM: _on_msg completed, doc callbacks restored")
 
     def _on_error(self, ref: str, error: Exception) -> None:
         if ref not in state._handles or config.console_output in [None, 'disable']:
