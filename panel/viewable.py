@@ -485,6 +485,7 @@ class MimeRenderMixin:
         """
         Handles Protocol messages arriving from the client comm.
         """
+        import os
         # Check for debugging environment variable
         debug_comm = os.environ.get('PANEL_DEBUG_COMM', '').lower() in ['true', '1', 'yes', 'on']
         
