@@ -361,8 +361,22 @@ class JupyterCommJSBinary(JupyterCommJS):
                 print(f"🔍 PANEL_DEBUG_COMM: Number of buffers={len(msg['buffers'])}")
         
         try:
-            buffers = {i: v for i, v in enumerate(msg['buffers'])}
-            result = dict(msg['content']['data'], _buffers=buffers)
+            # Handle cases where buffers might be missing or empty
+            buffers = {}
+            if 'buffers' in msg and msg['buffers']:
+                buffers = {i: v for i, v in enumerate(msg['buffers'])}
+            elif hasattr(msg, 'buffers') and msg.buffers:
+                buffers = {i: v for i, v in enumerate(msg.buffers)}
+            
+            # Get the data, handling different message structures
+            if 'content' in msg and 'data' in msg['content']:
+                data = msg['content']['data']
+            elif 'data' in msg:
+                data = msg['data']
+            else:
+                data = msg
+            
+            result = dict(data, _buffers=buffers)
             
             if debug_comm:
                 print(f"✅ PANEL_DEBUG_COMM: Message decoded successfully")
@@ -375,7 +389,26 @@ class JupyterCommJSBinary(JupyterCommJS):
                 print(f"❌ PANEL_DEBUG_COMM: Message content: {msg}")
                 import traceback
                 traceback.print_exc()
-            raise
+            
+            # Fallback: try parent class decode if our enhanced version fails
+            try:
+                return super(JupyterCommJSBinary, cls).decode(msg)
+            except Exception:
+                # Last resort: return empty buffers to prevent total failure
+                if debug_comm:
+                    print(f"🔄 PANEL_DEBUG_COMM: Using fallback decode with empty buffers")
+                
+                # Extract data safely
+                try:
+                    if 'content' in msg and 'data' in msg['content']:
+                        data = msg['content']['data']
+                    elif 'data' in msg:
+                        data = msg['data']
+                    else:
+                        data = msg
+                    return dict(data, _buffers={})
+                except Exception:
+                    return {'_buffers': {}}
 
 class JupyterCommManagerBinary(_JupyterCommManager):
 

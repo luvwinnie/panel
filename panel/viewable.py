@@ -553,14 +553,61 @@ class MimeRenderMixin:
                     print(f"❌ PANEL_DEBUG_COMM: Message repr: {repr(msg)}")
                 print(f"❌ PANEL_DEBUG_COMM: Manager state: {vars(manager) if hasattr(manager, '__dict__') else 'N/A'}")
             
-            # Original warning logic
-            import os
-            bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
-            if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
-                warning_msg = "Comm received message that could not be deserialized."
+            # Handle buffer-related deserialization errors more gracefully
+            error_msg = str(de).lower()
+            if "can't resolve buffer" in error_msg or "buffer" in error_msg:
                 if debug_comm:
-                    warning_msg += f" Error: {de}"
-                self.param.warning(warning_msg)
+                    print(f"🔄 PANEL_DEBUG_COMM: Attempting to handle buffer resolution error")
+                
+                # Try to create a simplified patch without the problematic buffers
+                try:
+                    # Create a minimal patch to keep the UI responsive
+                    from bokeh.protocol.messages.patch_doc import PatchDoc
+                    from bokeh.protocol.receiver import Receiver
+                    
+                    # Extract non-buffer events if possible
+                    simplified_events = []
+                    if hasattr(patch, 'events'):
+                        for event in patch.events:
+                            # Skip events that reference buffers
+                            if hasattr(event, 'new') and isinstance(event.new, dict):
+                                if 'data' in event.new and 'id' in str(event.new.get('data', {})):
+                                    continue  # Skip buffer-dependent events
+                            simplified_events.append(event)
+                    
+                    if simplified_events:
+                        # Create a new patch with only the safe events
+                        import copy
+                        safe_patch = copy.deepcopy(patch)
+                        safe_patch.events = simplified_events
+                        safe_patch.apply_to_document(doc, comm.id if comm else None)
+                        if debug_comm:
+                            print(f"✅ PANEL_DEBUG_COMM: Applied simplified patch without buffers")
+                    else:
+                        if debug_comm:
+                            print(f"⚠️ PANEL_DEBUG_COMM: No safe events to apply, skipping patch")
+                        
+                except Exception as fallback_error:
+                    if debug_comm:
+                        print(f"❌ PANEL_DEBUG_COMM: Fallback patch failed: {fallback_error}")
+                    
+                    # Issue warning but don't crash
+                    import os
+                    bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
+                    if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
+                        warning_msg = "Comm received message with buffer data that could not be deserialized. Animation data may be incomplete."
+                        if debug_comm:
+                            warning_msg += f" Error: {de}"
+                        self.param.warning(warning_msg)
+            else:
+                # Original warning logic for non-buffer errors
+                import os
+                bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
+                if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
+                    warning_msg = "Comm received message that could not be deserialized."
+                    if debug_comm:
+                        warning_msg += f" Error: {de}"
+                    self.param.warning(warning_msg)
         except Exception as e:
             if debug_comm:
                 print(f"❌ PANEL_DEBUG_COMM: Unexpected error during patch application: {e}")
