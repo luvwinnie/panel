@@ -493,9 +493,12 @@ class MimeRenderMixin:
         try:
             patch.apply_to_document(doc, comm.id if comm else None)
         except DeserializationError:
-            self.param.warning(
-                "Comm received message that could not be deserialized."
-            )
+            import os
+            bokeh_log_level = os.environ.get('BOKEH_LOG_LEVEL', 'info').lower()
+            if bokeh_log_level in ['warn', 'warning', 'debug', 'trace']:
+                self.param.warning(
+                    "Comm received message that could not be deserialized."
+                )
         finally:
             doc.unhold()
             if held:
